@@ -18,7 +18,7 @@ pip install -r requirements.txt
 
 ### download datasets
 #### KITTI Odometry
-<img src="./assets/kitti_09.png" alt="KITTI Odometry sequence 09" width="50%" />
+<img src="./assets/kitti_09.png" alt="KITTI Odometry sequence 09" width="60%" />
 
 #### EuRoC MAV Dataset (TODO)
 
