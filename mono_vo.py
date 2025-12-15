@@ -21,6 +21,7 @@ from data_loaders.euroc_loader import EuRoCLoader
 class Config:
     data_root = os.path.join("/media", os.environ["USER"], "SeagateDrive/ws/datasets/")
     dataset_type: str = 'KITTI' # ['KITTI', "EuRoC"]
+    load_gt_pose: bool = True
     seq: str = '09' # '00'
     key_frame_interval = 5
     max_depth = 100.0  # in meters, clamp very far triangulated points
@@ -64,7 +65,8 @@ class MonoVO:
         self.K = np.array([[cam_config['intrinsics']['fx'], 0, cam_config['intrinsics']['cx']],
                            [0, cam_config['intrinsics']['fy'], cam_config['intrinsics']['cy']],
                            [0, 0, 1]])
-        self.gt_pose = loader.load_gt_pose()
+        if config.load_gt_pose:
+            self.gt_pose = loader.load_gt_pose()
         
         # output pose file
         output_dir = os.path.join(config.result_dir, config.dataset_type)
@@ -152,17 +154,28 @@ class MonoVO:
         T_wc_list = []
         batched_xyz = []
         batched_wxyz = []
+        if config.load_gt_pose:
+            batched_xyz_gt = []
+            batched_wxyz_gt = []
         pcd_all = []
         pcd_colors_all = []
+
+        server.scene.add_frame(
+            name="/world_frame",
+            axes_length = 5,
+            axes_radius = 0.1,
+        )
         pcd_handle = server.scene.add_point_cloud(
-            name="/vision_frame/point_cloud",
+            name="/world_frame/point_cloud",
             points=np.empty((0, 3)),
             colors=np.empty((0, 3)),
             point_size=0.005,
         )
+
         for i in range(self.num_frames):
             curr_img = cv2.imread(self.img_files_list[i], 1)
-            curr_T_gt = self.gt_pose[i]
+            if config.load_gt_pose:
+                curr_T_gt = self.gt_pose[i]
 
             if i == 0:
                 curr_T_wc = np.eye(4)
@@ -180,7 +193,7 @@ class MonoVO:
                         
                 # triangulate only in key frames
                 if i%config.key_frame_interval == 0:
-                    pcd, valid_mask = self.triangulate(pts1, pts2, self.K, prev_T_gt, curr_T_gt)
+                    pcd, valid_mask = self.triangulate(pts1, pts2, self.K, prev_T_wc, curr_T_wc)
                     if not np.any(valid_mask):
                         continue
                     pts2 = pts2[valid_mask]
@@ -220,18 +233,21 @@ class MonoVO:
 
             # update prev pose
             prev_T_wc = curr_T_wc
-            prev_T_gt = curr_T_gt
+            if config.load_gt_pose:
+                prev_T_gt = curr_T_gt
 
-            # add camera coord frame
+            # add camera frames
             if i % config.key_frame_interval == 0:
-                # T_viz = CoordTransform.T_cv_to_ros @ curr_T_wc @ np.eye(4).T
-                T_viz = CoordTransform.T_cv_to_ros @ curr_T_gt @ np.eye(4).T
+                # change the world frame to ROS convention
+                T_viz = CoordTransform.T_cv_to_ros @ curr_T_wc @ np.eye(4).T
+                
+                # add camera coord frame
                 tx, ty, tz = T_viz[:3, 3]
                 qx, qy, qz, qw = Rotation.from_matrix(T_viz[:3, :3]).as_quat()
                 batched_xyz.append((tx, ty, tz))
                 batched_wxyz.append((qw, qx, qy, qz))
                 server.scene.add_batched_axes(
-                    "/vision_frame",
+                    f"/world_frame/camera_frames",
                     axes_length = 1,
                     axes_radius = 0.1,
                     batched_wxyzs=batched_wxyz,
@@ -253,7 +269,7 @@ class MonoVO:
                 aspect = frame.rgb.shape[1] / frame.rgb.shape[0]
                 downsample_factor = 1
                 server.scene.add_camera_frustum(
-                    f"/vision_frame/cam_frustum/cam_{i}",
+                    f"/world_frame/cam_frustum/cam_{i}",
                     fov=fov,
                     aspect=aspect,
                     scale=1,
@@ -261,6 +277,21 @@ class MonoVO:
                     wxyz=tf.SO3.from_matrix(frame.T_wc[:3, :3]).wxyz,
                     position=frame.T_wc[:3, 3],
                 )
+
+                # displace graound truth if loaded
+                if config.load_gt_pose:
+                    T_viz_gt = CoordTransform.T_cv_to_ros @ curr_T_gt @ np.eye(4).T
+                    tx_gt, ty_gt, tz_gt = T_viz_gt[:3, 3]
+                    qx_gt, qy_gt, qz_gt, qw_gt = Rotation.from_matrix(T_viz_gt[:3, :3]).as_quat()
+                    batched_xyz_gt.append((tx_gt, ty_gt, tz_gt))
+                    batched_wxyz_gt.append((qw_gt, qx_gt, qy_gt, qz_gt))
+                    server.scene.add_batched_axes(
+                        "/world_frame/ground_truth_frames",
+                        axes_length = 1.5,
+                        axes_radius = 0.15,
+                        batched_wxyzs=batched_wxyz_gt,
+                        batched_positions=batched_xyz_gt,
+                    )
 
         cv2.destroyAllWindows()
 
