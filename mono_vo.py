@@ -263,25 +263,18 @@ class MonoVO:
                 # convert to RGB only for Viser display
                 curr_img_rgb = cv2.cvtColor(curr_img, cv2.COLOR_BGR2RGB)
 
-                # define current frame
-                frame = Frame(
-                    rgb=curr_img_rgb,
-                    K = self.K,
-                    T_wc = T_viz,
-                )
-
                 # add camera frustrum
-                fov = 2 * np.arctan2(frame.rgb.shape[0] / 2, frame.K[0, 0])
-                aspect = frame.rgb.shape[1] / frame.rgb.shape[0]
+                fov = 2 * np.arctan2(curr_img_rgb.shape[0] / 2, self.K[0, 0])
+                aspect = curr_img_rgb.shape[1] / curr_img_rgb.shape[0]
                 downsample_factor = 1
                 server.scene.add_camera_frustum(
                     f"/world_frame/cam_frustum/cam_{i}",
                     fov=fov,
                     aspect=aspect,
                     scale=1,
-                    image=frame.rgb[::downsample_factor, ::downsample_factor],
-                    wxyz=tf.SO3.from_matrix(frame.T_wc[:3, :3]).wxyz,
-                    position=frame.T_wc[:3, 3],
+                    image=curr_img_rgb[::downsample_factor, ::downsample_factor],
+                    wxyz=tf.SO3.from_matrix(T_viz[:3, :3]).wxyz,
+                    position=T_viz[:3, 3],
                 )
 
                 # displace graound truth if loaded
