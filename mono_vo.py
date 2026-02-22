@@ -75,7 +75,7 @@ class MonoVO:
         self.out_pose_file = os.path.join(output_dir, config.seq + '-traj_est.txt')
 
 
-    def extractAndMatchFeature(self, prev_img, curr_img, n_feats=10000, show_matches=True):
+    def extract_match_features(self, prev_img, curr_img, n_feats=10000, matcher_type='bf', show_matches=True):
         """ Use ORB Feature to do feature matching """
         # create ORB features
         orb = cv2.ORB_create(nfeatures=n_feats)
@@ -84,11 +84,16 @@ class MonoVO:
         kp1, des1 = orb.detectAndCompute(prev_img, None)
         kp2, des2 = orb.detectAndCompute(curr_img, None)
 
-        # use brute-force matcher
-        bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+        if matcher_type == 'bf':
+            matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+        elif matcher_type == 'flann':
+            FLANN_INDEX_LSH = 6
+            matcher = cv2.FlannBasedMatcher(
+                dict(algorithm=FLANN_INDEX_LSH, table_number=6, key_size=12, multi_probe_level=1),
+                dict(checks=50))
 
         # Match ORB descriptors
-        matches = bf.match(des1, des2)
+        matches = matcher.match(des1, des2)
 
         # Sort the matched keypoints in the order of matching distance
         # so the best matches came to the front
@@ -146,10 +151,23 @@ class MonoVO:
             valid_mask = valid_mask & (depth < config.max_depth)
 
         return X[:, valid_mask], valid_mask
-
+    
 
     def run(self):
         server = viser.ViserServer()
+
+        server.scene.add_frame(
+            name="/world_frame",
+            axes_length = 5,
+            axes_radius = 0.1,
+        )
+        
+        pcd_handle = server.scene.add_point_cloud(
+            name="/world_frame/point_cloud",
+            points=np.empty((0, 3)),
+            colors=np.empty((0, 3)),
+            point_size=0.005,
+        )
     
         T_wc_list = []
         batched_xyz = []
@@ -159,18 +177,6 @@ class MonoVO:
             batched_wxyz_gt = []
         pcd_all = []
         pcd_colors_all = []
-
-        server.scene.add_frame(
-            name="/world_frame",
-            axes_length = 5,
-            axes_radius = 0.1,
-        )
-        pcd_handle = server.scene.add_point_cloud(
-            name="/world_frame/point_cloud",
-            points=np.empty((0, 3)),
-            colors=np.empty((0, 3)),
-            point_size=0.005,
-        )
 
         for i in range(self.num_frames):
             curr_img = cv2.imread(self.img_files_list[i], 1)
@@ -184,7 +190,7 @@ class MonoVO:
                 prev_img = cv2.imread(self.img_files_list[i-1], 0)
 
                 # feature extraction and matching, then compute relative pose in cam frame 
-                pts1, pts2 = self.extractAndMatchFeature(prev_img, curr_img, show_matches=False)
+                pts1, pts2 = self.extract_match_features(prev_img, curr_img, matcher_type='flann', show_matches=False)
                 T_cc = self.compute_pose(pts1, pts2)
 
                 # get current pose
