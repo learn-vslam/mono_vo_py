@@ -37,12 +37,83 @@ class CoordTransform:
         ])
 
 
-class Frame:
-    def __init__(self, rgb, K, T_wc):
-        self.rgb = rgb
-        self.K = K
-        # camera pose represented in world frame
-        self.T_wc = T_wc
+class Visualizer:
+    def __init__(self):
+        self.server = viser.ViserServer()
+
+        self.server.scene.add_frame(
+            name="/world_frame",
+            axes_length = 5,
+            axes_radius = 0.1,
+        )
+        
+        self.pcd_handle = self.server.scene.add_point_cloud(
+            name="/world_frame/point_cloud",
+            points=np.empty((0, 3)),
+            colors=np.empty((0, 3)),
+            point_size=0.005,
+        )
+
+        self.batched_xyz = []
+        self.batched_wxyz = []
+        if config.load_gt_pose:
+            self.batched_xyz_gt = []
+            self.batched_wxyz_gt = []
+    
+
+    def add_cam_frame(self, T_wc, frame_name):
+        # change the world frame to ROS convention
+        T_viz = CoordTransform.T_cv_to_ros @ T_wc @ np.eye(4).T
+        
+        # add camera coord frame
+        tx, ty, tz = T_viz[:3, 3]
+        qx, qy, qz, qw = Rotation.from_matrix(T_viz[:3, :3]).as_quat()
+        self.batched_xyz.append((tx, ty, tz))
+        self.batched_wxyz.append((qw, qx, qy, qz))
+        self.server.scene.add_batched_axes(
+            f"/world_frame/{frame_name}",
+            axes_length = 1,
+            axes_radius = 0.1,
+            batched_wxyzs=self.batched_wxyz,
+            batched_positions=self.batched_xyz,
+        )
+    
+
+    def add_cam_frustum(self, curr_img, K, T_wc, frame_idx):
+        # change the world frame to ROS convention
+        T_viz = CoordTransform.T_cv_to_ros @ T_wc @ np.eye(4).T
+
+        # convert to RGB only for Viser display
+        curr_img_rgb = cv2.cvtColor(curr_img, cv2.COLOR_BGR2RGB)
+
+        # add camera frustrum
+        fov = 2 * np.arctan2(curr_img_rgb.shape[0] / 2, K[0, 0])
+        aspect = curr_img_rgb.shape[1] / curr_img_rgb.shape[0]
+        downsample_factor = 1
+        self.visualizer.server.scene.add_camera_frustum(
+            f"/world_frame/cam_frustum/cam_{frame_idx}",
+            fov=fov,
+            aspect=aspect,
+            scale=1,
+            image=curr_img_rgb[::downsample_factor, ::downsample_factor],
+            wxyz=tf.SO3.from_matrix(T_viz[:3, :3]).wxyz,
+            position=T_viz[:3, 3],
+        )
+
+
+    def add_gt_frame(self, curr_T_gt):
+        T_viz_gt = CoordTransform.T_cv_to_ros @ curr_T_gt @ np.eye(4).T
+        tx_gt, ty_gt, tz_gt = T_viz_gt[:3, 3]
+        qx_gt, qy_gt, qz_gt, qw_gt = Rotation.from_matrix(T_viz_gt[:3, :3]).as_quat()
+        self.batched_xyz_gt.append((tx_gt, ty_gt, tz_gt))
+        self.batched_wxyz_gt.append((qw_gt, qx_gt, qy_gt, qz_gt))
+        self.server.scene.add_batched_axes(
+            "/world_frame/ground_truth_frames",
+            axes_length = 1.5,
+            axes_radius = 0.15,
+            batched_wxyzs=self.batched_wxyz_gt,
+            batched_positions=self.batched_xyz_gt,
+        )
 
 
 class MonoVO:
@@ -154,27 +225,7 @@ class MonoVO:
     
 
     def run(self):
-        server = viser.ViserServer()
-
-        server.scene.add_frame(
-            name="/world_frame",
-            axes_length = 5,
-            axes_radius = 0.1,
-        )
-        
-        pcd_handle = server.scene.add_point_cloud(
-            name="/world_frame/point_cloud",
-            points=np.empty((0, 3)),
-            colors=np.empty((0, 3)),
-            point_size=0.005,
-        )
-    
         T_wc_list = []
-        batched_xyz = []
-        batched_wxyz = []
-        if config.load_gt_pose:
-            batched_xyz_gt = []
-            batched_wxyz_gt = []
         pcd_all = []
         pcd_colors_all = []
 
@@ -217,8 +268,8 @@ class MonoVO:
                     pcd_colors_all.extend(colors_rgb.tolist())
 
                     # update point cloud handle (avoids re-adding every time)
-                    pcd_handle.points = np.array(pcd_all)
-                    pcd_handle.colors = np.array(pcd_colors_all)
+                    self.visualizer.pcd_handle.points = np.array(pcd_all)
+                    self.visualizer.pcd_handle.colors = np.array(pcd_colors_all)
 
                 # draw the current image with keypoints
                 keypoints = [cv2.KeyPoint(x=pt[0], y=pt[1], size=1) for pt in pts2]
@@ -242,55 +293,12 @@ class MonoVO:
             if config.load_gt_pose:
                 prev_T_gt = curr_T_gt
 
-            # add camera frames
+            # add camera frames and frustum for visualization
             if i % config.key_frame_interval == 0:
-                # change the world frame to ROS convention
-                T_viz = CoordTransform.T_cv_to_ros @ curr_T_wc @ np.eye(4).T
-                
-                # add camera coord frame
-                tx, ty, tz = T_viz[:3, 3]
-                qx, qy, qz, qw = Rotation.from_matrix(T_viz[:3, :3]).as_quat()
-                batched_xyz.append((tx, ty, tz))
-                batched_wxyz.append((qw, qx, qy, qz))
-                server.scene.add_batched_axes(
-                    f"/world_frame/camera_frames",
-                    axes_length = 1,
-                    axes_radius = 0.1,
-                    batched_wxyzs=batched_wxyz,
-                    batched_positions=batched_xyz,
-                )
-
-                # convert to RGB only for Viser display
-                curr_img_rgb = cv2.cvtColor(curr_img, cv2.COLOR_BGR2RGB)
-
-                # add camera frustrum
-                fov = 2 * np.arctan2(curr_img_rgb.shape[0] / 2, self.K[0, 0])
-                aspect = curr_img_rgb.shape[1] / curr_img_rgb.shape[0]
-                downsample_factor = 1
-                server.scene.add_camera_frustum(
-                    f"/world_frame/cam_frustum/cam_{i}",
-                    fov=fov,
-                    aspect=aspect,
-                    scale=1,
-                    image=curr_img_rgb[::downsample_factor, ::downsample_factor],
-                    wxyz=tf.SO3.from_matrix(T_viz[:3, :3]).wxyz,
-                    position=T_viz[:3, 3],
-                )
-
-                # displace graound truth if loaded
+                self.visualizer.add_cam_frame(curr_T_wc, f"cam_{i}")
+                self.visualizer.add_cam_frustum(curr_img, self.K, curr_T_wc, i)
                 if config.load_gt_pose:
-                    T_viz_gt = CoordTransform.T_cv_to_ros @ curr_T_gt @ np.eye(4).T
-                    tx_gt, ty_gt, tz_gt = T_viz_gt[:3, 3]
-                    qx_gt, qy_gt, qz_gt, qw_gt = Rotation.from_matrix(T_viz_gt[:3, :3]).as_quat()
-                    batched_xyz_gt.append((tx_gt, ty_gt, tz_gt))
-                    batched_wxyz_gt.append((qw_gt, qx_gt, qy_gt, qz_gt))
-                    server.scene.add_batched_axes(
-                        "/world_frame/ground_truth_frames",
-                        axes_length = 1.5,
-                        axes_radius = 0.15,
-                        batched_wxyzs=batched_wxyz_gt,
-                        batched_positions=batched_xyz_gt,
-                    )
+                    self.visualizer.add_gt_frame(curr_T_gt)
 
         cv2.destroyAllWindows()
 
