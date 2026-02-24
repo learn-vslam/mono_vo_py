@@ -60,22 +60,29 @@ class Visualizer:
             name=f"/world_frame/{pcd_name}",
             points=np.empty((0, 3)),
             colors=np.empty((0, 3)),
-            point_size=0.005,
+            point_size=0.05,
         )
     
 
-    def add_cam_frame(self, T_wc, frame_names, frame_idx):
-        # add camera coord frame
+    def add_cam_frame(self, T_wc, frame_names, frame_idx, axes_length=1, axes_radius=0.1):
         tx, ty, tz = T_wc[:3, 3]
         qx, qy, qz, qw = Rotation.from_matrix(T_wc[:3, :3]).as_quat()
-        self.batched_xyz.append((tx, ty, tz))
-        self.batched_wxyz.append((qw, qx, qy, qz))
+        
+        # Use per-name lists instead of shared ones
+        if not hasattr(self, '_batched_data'):
+            self._batched_data = {}
+        if frame_names not in self._batched_data:
+            self._batched_data[frame_names] = {'xyz': [], 'wxyz': []}
+        
+        self._batched_data[frame_names]['xyz'].append((tx, ty, tz))
+        self._batched_data[frame_names]['wxyz'].append((qw, qx, qy, qz))
+        
         self.server.scene.add_batched_axes(
             f"/world_frame/{frame_names}/cam_{frame_idx}",
-            axes_length = 1,
-            axes_radius = 0.1,
-            batched_wxyzs=self.batched_wxyz,
-            batched_positions=self.batched_xyz,
+            axes_length=1,
+            axes_radius=0.1,
+            batched_wxyzs=self._batched_data[frame_names]['wxyz'],
+            batched_positions=self._batched_data[frame_names]['xyz'],
         )
     
 
@@ -95,21 +102,6 @@ class Visualizer:
             image=curr_img_rgb[::downsample_factor, ::downsample_factor],
             wxyz=tf.SO3.from_matrix(T_wc[:3, :3]).wxyz,
             position=T_wc[:3, 3],
-        )
-
-
-    def add_gt_frame(self, curr_T_gt):
-        T_viz_gt = CoordTransform.T_cv_to_ros @ curr_T_gt @ np.eye(4).T
-        tx_gt, ty_gt, tz_gt = T_viz_gt[:3, 3]
-        qx_gt, qy_gt, qz_gt, qw_gt = Rotation.from_matrix(T_viz_gt[:3, :3]).as_quat()
-        self.batched_xyz_gt.append((tx_gt, ty_gt, tz_gt))
-        self.batched_wxyz_gt.append((qw_gt, qx_gt, qy_gt, qz_gt))
-        self.server.scene.add_batched_axes(
-            "/world_frame/ground_truth_frames",
-            axes_length = 1.5,
-            axes_radius = 0.15,
-            batched_wxyzs=self.batched_wxyz_gt,
-            batched_positions=self.batched_xyz_gt,
         )
 
 
@@ -337,7 +329,7 @@ class MonoVO:
                 self.visualizer.add_cam_frame(curr_T_wc_ros, "cam_frames", frame_idx)
                 self.visualizer.add_cam_frustum(curr_img, self.K, curr_T_wc_ros, "cam_frustum", frame_idx)
                 if config.load_gt_pose:
-                    self.visualizer.add_gt_frame(curr_T_gt)
+                    self.visualizer.add_cam_frame(curr_T_gt, "gt_frames", frame_idx, axes_length=1.5, axes_radius=0.15)
 
         cv2.destroyAllWindows()
 
